@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"hash/crc32"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -224,13 +225,22 @@ func ProcessFileChange(thePath string, info os.FileInfo, monitored string) {
 func WatchRecursively(watcher *fsnotify.Watcher, root string, monitored string) error {
 	safeRoot := PathSafe(root)
 
-	db, _ := sql.Open("sqlite3", SlashSuffix(monitored)+".sync/index.db")
+	db, err := sql.Open("sqlite3", SlashSuffix(monitored)+".sync/index.db")
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer db.Close()
 
 	mapFiles := make(map[string]IndexedFile)
-	psSelectFilesLike, _ := db.Prepare("SELECT * FROM FILES WHERE FILE_PATH LIKE ?")
+	psSelectFilesLike, err := db.Prepare("SELECT * FROM FILES WHERE FILE_PATH LIKE ?")
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer psSelectFilesLike.Close()
-	rows, _ := psSelectFilesLike.Query(SlashSuffix(LikeSafe(safeRoot)[len(monitored):]) + "%")
+	rows, err := psSelectFilesLike.Query(SlashSuffix(LikeSafe(safeRoot)[len(monitored):]) + "%")
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer rows.Close()
 	for rows.Next() {
 		file := new(IndexedFile)

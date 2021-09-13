@@ -3,14 +3,15 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"io/ioutil"
+	"os"
+	"runtime"
+
 	simplejson "github.com/bitly/go-simplejson"
 	"github.com/elgs/filesync/api"
 	"github.com/elgs/filesync/index"
 	"github.com/fsnotify/fsnotify"
 	_ "github.com/mattn/go-sqlite3"
-	"io/ioutil"
-	"os"
-	"runtime"
 )
 
 func main() {
