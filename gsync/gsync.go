@@ -1,23 +1,32 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
-	simplejson "github.com/bitly/go-simplejson"
-	"github.com/elgs/filesync/index"
 	"hash/crc32"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"runtime"
 	"time"
+
+	simplejson "github.com/bitly/go-simplejson"
+	"github.com/elgs/filesync/index"
 )
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	fmt.Println("CPUs: ", runtime.NumCPU())
+
 	input := args()
 	done := make(chan bool)
 	if len(input) >= 1 {
@@ -38,12 +47,25 @@ func start(configFile string, done chan bool) {
 	json, _ := simplejson.NewJson(b)
 	ip := json.Get("ip").MustString("127.0.0.1")
 	port := json.Get("port").MustInt(6776)
+	maxScanInterval := json.Get("maxScanInterval").MustString("5m")
 
 	monitors := json.Get("monitors").MustMap()
 
+	pubKeyFile := json.Get("pubKeyFile").MustString("public.key")
+	pub, err := ioutil.ReadFile(pubKeyFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	pubPem, _ := pem.Decode(pub)
+	publicKey, err := x509.ParsePKCS1PublicKey(pubPem.Bytes)
+	if err != nil {
+		log.Fatal(err)
+	}
+	msi, _ := time.ParseDuration(maxScanInterval)
+
 	for k, v := range monitors {
 		monitored, _ := v.(string)
-		go startWork(ip, port, k, monitored, time.Minute)
+		go startWork(ip, port, k, monitored, msi, publicKey)
 	}
 }
 func args() []string {
@@ -58,7 +80,7 @@ func args() []string {
 	return ret
 }
 
-func startWork(ip string, port int, key string, monitored string, maxInterval time.Duration) {
+func startWork(ip string, port int, key string, monitored string, maxInterval time.Duration, publicKey *rsa.PublicKey) {
 	var lastIndexed int64 = 0
 	var changed bool = false
 	sleepTime := time.Second
@@ -66,7 +88,7 @@ func startWork(ip string, port int, key string, monitored string, maxInterval ti
 		if changed {
 			sleepTime = time.Second
 		} else {
-			sleepTime *= 2
+			sleepTime *= 4
 			if sleepTime >= maxInterval {
 				sleepTime = maxInterval
 			}
@@ -74,7 +96,7 @@ func startWork(ip string, port int, key string, monitored string, maxInterval ti
 		changed = false
 		//fmt.Println("Sleep", sleepTime, lastIndexed)
 		time.Sleep(sleepTime)
-		dirs := dirsFromServer(ip, port, key, lastIndexed-3600)
+		dirs := dirsFromServer(ip, port, key, lastIndexed-3600, publicKey)
 		if len(dirs) > 0 {
 			for _, dir := range dirs {
 				dirMap, _ := dir.(map[string]interface{})
@@ -96,7 +118,7 @@ func startWork(ip string, port int, key string, monitored string, maxInterval ti
 				}
 			}
 
-			files := filesFromServer(ip, port, key, "/", lastIndexed-3600)
+			files := filesFromServer(ip, port, key, "/", lastIndexed-3600, publicKey)
 			for _, file := range files {
 				fileMap, _ := file.(map[string]interface{})
 				filePath, _ := fileMap["FilePath"].(string)
@@ -123,7 +145,7 @@ func startWork(ip string, port int, key string, monitored string, maxInterval ti
 					func() {
 						out, _ := os.Create(f)
 						defer out.Close()
-						downloadFromServer(ip, port, key, filePath, 0, fileSize, out)
+						downloadFromServer(ip, port, key, filePath, 0, fileSize, out, publicKey)
 					}()
 				} else {
 					// file exists, analyze it
@@ -135,7 +157,7 @@ func startWork(ip string, port int, key string, monitored string, maxInterval ti
 					}
 					// file change, analyse it block by block
 					changed = true
-					fileParts := filePartsFromServer(ip, port, key, filePath)
+					fileParts := filePartsFromServer(ip, port, key, filePath, publicKey)
 					func() {
 						out, _ := os.OpenFile(f, os.O_RDWR, os.FileMode(0666))
 						defer out.Close()
@@ -163,7 +185,7 @@ func startWork(ip string, port int, key string, monitored string, maxInterval ti
 								return
 							}
 							// block changed
-							downloadFromServer(ip, port, key, filePath, startIndex, offset, out)
+							downloadFromServer(ip, port, key, filePath, startIndex, offset, out, publicKey)
 						}
 					}()
 				}
@@ -172,15 +194,23 @@ func startWork(ip string, port int, key string, monitored string, maxInterval ti
 	}
 }
 
-func downloadFromServer(ip string, port int, key string, filePath string, start int64, length int64, file *os.File) int64 {
+func downloadFromServer(ip string, port int, key string, filePath string, start int64, length int64, file *os.File, publicKey *rsa.PublicKey) int64 {
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println(err)
 		}
 	}()
 	client := &http.Client{}
+	query := fmt.Sprint("file_path=", url.QueryEscape(filePath), "&start=", start, "&length=", length)
+	encryptedBytes, _ := rsa.EncryptOAEP(
+		sha256.New(),
+		rand.Reader,
+		publicKey,
+		[]byte(query),
+		nil)
+	encodedQuery := base64.URLEncoding.EncodeToString(encryptedBytes)
 	req, _ := http.NewRequest("GET", fmt.Sprint("http://", ip, ":", port,
-		"/download?&file_path=", url.QueryEscape(filePath), "&start=", start, "&length=", length), nil)
+		"/download?query=", encodedQuery), nil)
 	req.Header.Add("AUTH_KEY", key)
 	resp, _ := client.Do(req)
 	defer resp.Body.Close()
@@ -189,15 +219,23 @@ func downloadFromServer(ip string, port int, key string, filePath string, start 
 	return n
 }
 
-func filePartsFromServer(ip string, port int, key string, filePath string) []interface{} {
+func filePartsFromServer(ip string, port int, key string, filePath string, publicKey *rsa.PublicKey) []interface{} {
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println(err)
 		}
 	}()
 	client := &http.Client{}
+	query := fmt.Sprint("file_path=", url.QueryEscape(filePath))
+	encryptedBytes, _ := rsa.EncryptOAEP(
+		sha256.New(),
+		rand.Reader,
+		publicKey,
+		[]byte(query),
+		nil)
+	encodedQuery := base64.URLEncoding.EncodeToString(encryptedBytes)
 	req, _ := http.NewRequest("GET", fmt.Sprint("http://", ip, ":", port,
-		"/file_parts?file_path=", url.QueryEscape(filePath)), nil)
+		"/file_parts?query=", encodedQuery), nil)
 	req.Header.Add("AUTH_KEY", key)
 	resp, _ := client.Do(req)
 	defer resp.Body.Close()
@@ -207,15 +245,23 @@ func filePartsFromServer(ip string, port int, key string, filePath string) []int
 	return fileParts
 }
 
-func filesFromServer(ip string, port int, key string, filePath string, lastIndexed int64) []interface{} {
+func filesFromServer(ip string, port int, key string, filePath string, lastIndexed int64, publicKey *rsa.PublicKey) []interface{} {
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println(err)
 		}
 	}()
 	client := &http.Client{}
+	query := fmt.Sprint("last_indexed=", lastIndexed, "&file_path=", url.QueryEscape(filePath))
+	encryptedBytes, _ := rsa.EncryptOAEP(
+		sha256.New(),
+		rand.Reader,
+		publicKey,
+		[]byte(query),
+		nil)
+	encodedQuery := base64.URLEncoding.EncodeToString(encryptedBytes)
 	req, _ := http.NewRequest("GET", fmt.Sprint("http://", ip, ":", port,
-		"/files?last_indexed=", lastIndexed, "&file_path=", url.QueryEscape(filePath)), nil)
+		"/files?query=", encodedQuery), nil)
 	req.Header.Add("AUTH_KEY", key)
 	resp, _ := client.Do(req)
 	defer resp.Body.Close()
@@ -225,14 +271,22 @@ func filesFromServer(ip string, port int, key string, filePath string, lastIndex
 	return files
 }
 
-func dirsFromServer(ip string, port int, key string, lastIndexed int64) []interface{} {
+func dirsFromServer(ip string, port int, key string, lastIndexed int64, publicKey *rsa.PublicKey) []interface{} {
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println(err)
 		}
 	}()
 	client := &http.Client{}
-	req, _ := http.NewRequest("GET", fmt.Sprint("http://", ip, ":", port, "/dirs?last_indexed=", lastIndexed), nil)
+	query := fmt.Sprint("last_indexed=", lastIndexed)
+	encryptedBytes, _ := rsa.EncryptOAEP(
+		sha256.New(),
+		rand.Reader,
+		publicKey,
+		[]byte(query),
+		nil)
+	encodedQuery := base64.URLEncoding.EncodeToString(encryptedBytes)
+	req, _ := http.NewRequest("GET", fmt.Sprint("http://", ip, ":", port, "/dirs?query=", encodedQuery), nil)
 	req.Header.Add("AUTH_KEY", key)
 	resp, _ := client.Do(req)
 	defer resp.Body.Close()

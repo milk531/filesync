@@ -1,9 +1,12 @@
 package main
 
 import (
+	"crypto/x509"
 	"database/sql"
+	"encoding/pem"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
 	"runtime"
 
@@ -48,7 +51,18 @@ func start(configFile string) {
 		go index.ProcessEvent(watcher, monitored)
 	}
 
-	api.RunWeb(ip, port, monitors)
+	priKeyFile := json.Get("priKeyFile").MustString("private_key.pem")
+	pri, err := ioutil.ReadFile(priKeyFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	priPem, _ := pem.Decode(pri)
+	privateKey, err := x509.ParsePKCS1PrivateKey(priPem.Bytes)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	api.RunWeb(ip, port, monitors, privateKey)
 	//watcher.Close()
 }
 

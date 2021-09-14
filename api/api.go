@@ -1,18 +1,23 @@
 package api
 
 import (
+	"crypto"
+	"crypto/rsa"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strconv"
+
 	"github.com/codegangsta/martini"
 	"github.com/codegangsta/martini-contrib/encoder"
 	"github.com/elgs/filesync/index"
-	"io"
-	"net/http"
-	"os"
-	"strconv"
 )
 
-func RunWeb(ip string, port int, monitors map[string]interface{}) {
+func RunWeb(ip string, port int, monitors map[string]interface{}, privateKey *rsa.PrivateKey) {
 	m := martini.New()
 	route := martini.NewRouter()
 
@@ -26,6 +31,24 @@ func RunWeb(ip string, port int, monitors map[string]interface{}) {
 			monitored, _ := monitors[authKey].(string)
 			req.Header.Set("MONITORED", monitored)
 		}
+	})
+	// decode the query string
+	m.Use(func(res http.ResponseWriter, req *http.Request) {
+		rawStr := req.FormValue("query")
+		encryptedBytes, err := base64.URLEncoding.DecodeString(rawStr)
+		if err == nil {
+			decryptedBytes, err := privateKey.Decrypt(nil, encryptedBytes, &rsa.OAEPOptions{Hash: crypto.SHA256})
+			if err == nil {
+				queryStr := string(decryptedBytes)
+				queryForm, _ := url.ParseQuery(queryStr)
+				for k, v := range queryForm {
+					req.Form.Set(k, v[0])
+				}
+				return
+			}
+		}
+		res.WriteHeader(http.StatusBadRequest)
+		res.Write([]byte("Bad Request."))
 	})
 
 	// map json encoder

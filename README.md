@@ -20,9 +20,10 @@ gsyncd.json
 {
     "ip": "0.0.0.0",
     "port": 6776,
+    "priKeyFile":"private_key.pem",   //private key file to decryption query
     "monitors": {
-        "home_elgs_desktop_a": "/home/elgs/Desktop/a",
-        "home_elgs_desktop_b": "/home/elgs/Desktop/b"
+        "AUTH_KEY_1": "monitored_dir_1",  //one auth key to one dir path
+        "AUTH_KEY_2": "monitored_dir_2"
     }
 }
 ```
@@ -44,11 +45,13 @@ Configuration
 gsync.json
 ```json
 {
-    "ip": "127.0.0.1",
+    "ip": "0.0.0.0",
     "port": 6776,
+    "maxScanInterval": "5m",   //max scan interval time to detect files changes on server
+    "pubKeyFile":"public.key", //public key file to encryption query
     "monitors": {
-        "home_elgs_desktop_a": "/home/elgs/Desktop/c",
-        "home_elgs_desktop_b": "/home/elgs/Desktop/d"
+        "AUTH_KEY_1": "monitored_dir_1",   //one auth key to one dir path
+        "AUTH_KEY_2": "monitored_dir_2"
     }
 }
 ```

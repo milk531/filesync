@@ -1,0 +1,9 @@
+{
+    "ip": "0.0.0.0",
+    "port": 6776,
+    "priKeyFile":"private_key.pem",
+    "monitors": {
+        "AUTH_KEY_1": "monitored_dir_1",
+        "AUTH_KEY_2": "monitored_dir_2"
+    }
+}
